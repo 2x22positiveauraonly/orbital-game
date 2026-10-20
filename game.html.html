@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Orbital Dispatcher (All-in-One)</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+
+        body {
+            background-color: #080a12;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
+            color: #00ffff;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Мобильное управление */
+        #mobile-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 20px;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .control-btn {
+            width: 70px;
+            height: 70px;
+            background: rgba(20, 30, 40, 0.6);
+            border: 2px solid rgba(0, 255, 255, 0.5);
+            border-radius: 50%;
+            color: #00ffff;
+            font-size: 30px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            pointer-events: auto;
+        }
+
+        .control-btn:active {
+            background: rgba(0, 255, 255, 0.3);
+        }
+
+        /* Кнопки UI */
+        #ui-layer {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 10;
+        }
+
+        button {
+            background: rgba(10, 20, 30, 0.8);
+            color: #00ffff;
+            border: 1px solid #00ffff;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button:active {
+            background: rgba(0, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="canvas"></canvas>
+
+        <div id="mobile-controls">
+            <div class="control-btn" id="btn-left">←</div>
+            <div class="control-group">
+                <div class="control-btn" id="btn-up">↑</div>
+                <div class="control-btn" id="btn-down">↓</div>
+            </div>
+            <div class="control-btn" id="btn-right">→</div>
+        </div>
+
+        <div id="ui-layer">
+            <button id="btn-switch">Сменить спутник (TAB)</button>
+            <button id="btn-reset">Рестарт (R)</button>
+        </div>
+    </div>
+
+    <script>
+        // Ждем полной загрузки страницы
+        window.onload = function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+
+            // --- НАСТРОЙКИ ---
+            let WIDTH, HEIGHT;
+            const EARTH_RADIUS = 80;
+            const MU = 3000.0;
+            const THRUST_POWER = 0.05;
+            const ROTATION_SPEED = 4.0;
+            const TRAIL_LENGTH = 400;
+
+            const CENTER = { x: 0, y: 0 };
+
+            const COLOR_BG = '#080a12';
+            const COLOR_EARTH = '#0f1e3c';
+            const COLOR_GLOW = '#0078ff';
+            const COLOR_GRID = '#1e283c';
+            const COLOR_TEXT = '#96c8ff';
+            const COLOR_HIGHLIGHT = '#00ffff';
+            const COLOR_WARNING = '#ff1e3c';
+            const COLOR_SAT = ['#00ffff', '#ff8c00', '#ff0096'];
+
+            let keys = { left: false, right: false, up: false, down: false };
+
+            // --- КЛАСС СПУТНИКА ---
+            class Satellite {
+                constructor(name, x, y, vx, vy, color) {
+                    this.name = name;
+                    this.x = x;
+                    this.y = y;
+                    this.vx = vx;
+                    this.vy = vy;
+                    this.color = color;
+                    this.fuel = 100;
+                    this.trail = [];
+                    this.alive = true;
+                    this.angle = Math.atan2(vy, vx) * 180 / Math.PI;
+                    this.thrusting = false;
+                }
+
+                rotate(dir) { this.angle += dir * ROTATION_SPEED; }
+
+                thrust(power) {
+                    const rad = this.angle * Math.PI / 180;
+                    this.vx += Math.cos(rad) * power;
+                    this.vy += Math.sin(rad) * power;
+                    this.fuel -= 0.2;
+                }
+
+                update() {
+                    if (!this.alive) return;
+                    const dx = CENTER.x - this.x;
+                    const dy = CENTER.y - this.y;
+                    const dist = Math.hypot(dx, dy);
+
+                    if (dist <= EARTH_RADIUS || dist > 3000) {
+                        this.alive = false;
+                        return;
+                    }
+
+                    const force = MU / (dist * dist);
+                    this.vx += (dx / dist) * force;
+                    this.vy += (dy / dist) * force;
+                    this.x += this.vx;
+                    this.y += this.vy;
+
+                    this.trail.push({ x: this.x, y: this.y });
+                    if (this.trail.length > TRAIL_LENGTH) this.trail.shift();
+                }
+
+                draw(ctx) {
+                    if (this.trail.length > 1) {
+                        ctx.beginPath();
+                        ctx.strokeStyle = this.color + '44';
+                        ctx.lineWidth = 2;
+                        ctx.moveTo(this.trail[0].x, this.trail[0].y);
+                        for (let i = 1; i < this.trail.length; i++) {
+                            ctx.lineTo(this.trail[i].x, this.trail[i].y);
+                        }
+                        ctx.stroke();
+                    }
+
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, 20, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color + '22';
+                    ctx.fill();
+
+                    const rad = this.angle * Math.PI / 180;
+                    ctx.save();
+                    ctx.translate(this.x, this.y);
+                    ctx.rotate(rad);
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(12, 0);
+                    ctx.lineTo(-8, -8);
+                    ctx.lineTo(-8, 8);
+                    ctx.closePath();
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.stroke();
+
+                    if (this.thrusting) {
+                        ctx.beginPath();
+                        ctx.moveTo(-8, -4);
+                        ctx.lineTo(-18 - Math.random() * 10, 0);
+                        ctx.lineTo(-8, 4);
+                        ctx.fillStyle = '#ff6600';
+                        ctx.fill();
+                    }
+                    ctx.restore();
+
+                    ctx.fillStyle = this.color;
+                    ctx.font = '12px monospace';
+                    ctx.fillText(this.name, this.x + 15, this.y + 5);
+                }
+            }
+
+            let sats = [];
+            let activeIdx = 0;
+            let stars = [];
+
+            function resize() {
+                WIDTH = canvas.width = window.innerWidth;
+                HEIGHT = canvas.height = window.innerHeight;
+                CENTER.x = WIDTH / 2;
+                CENTER.y = HEIGHT / 2;
+
+                stars = [];
+                for (let i = 0; i < 200; i++) {
+                    stars.push({ x: Math.random() * WIDTH, y: Math.random() * HEIGHT, r: Math.random() * 1.5 });
+                }
+            }
+            window.addEventListener('resize', resize);
+            resize();
+
+            function createOrbitSat(name, radius, angleRad, color) {
+                const x = CENTER.x + radius * Math.cos(angleRad);
+                const y = CENTER.y + radius * Math.sin(angleRad);
+                const vMag = Math.sqrt(MU / radius);
+                const vx = -vMag * Math.sin(angleRad);
+                const vy = vMag * Math.cos(angleRad);
+                return new Satellite(name, x, y, vx, vy, color);
+            }
+
+            function resetGame() {
+                sats = [
+                    createOrbitSat('ALPHA', 180, 0, COLOR_SAT[0]),
+                    createOrbitSat('BETA', 300, Math.PI / 2, COLOR_SAT[1]),
+                    createOrbitSat('GAMMA', 450, Math.PI, COLOR_SAT[2])
+                ];
+                activeIdx = 0;
+            }
+            resetGame();
+
+            // --- ОБРАБОТКА КЛАВИАТУРЫ ---
+            window.addEventListener('keydown', (e) => {
+                if (e.code === 'ArrowLeft') keys.left = true;
+                if (e.code === 'ArrowRight') keys.right = true;
+                if (e.code === 'ArrowUp') keys.up = true;
+                if (e.code === 'ArrowDown') keys.down = true;
+                if (e.code === 'Tab') { e.preventDefault(); activeIdx = (activeIdx + 1) % sats.length; }
+                if (e.code === 'KeyR') resetGame();
+            });
+            window.addEventListener('keyup', (e) => {
+                if (e.code === 'ArrowLeft') keys.left = false;
+                if (e.code === 'ArrowRight') keys.right = false;
+                if (e.code === 'ArrowUp') keys.up = false;
+                if (e.code === 'ArrowDown') keys.down = false;
+            });
+
+            // --- ОБРАБОТКА ТАЧЕЙ ---
+            function bindTouch(id, key) {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+                btn.addEventListener('touchstart', (e) => { e.preventDefault(); keys[key] = true; });
+                btn.addEventListener('touchend', (e) => { e.preventDefault(); keys[key] = false; });
+                btn.addEventListener('mousedown', () => keys[key] = true);
+                btn.addEventListener('mouseup', () => keys[key] = false);
+                btn.addEventListener('mouseleave', () => keys[key] = false);
+            }
+            bindTouch('btn-left', 'left');
+            bindTouch('btn-right', 'right');
+            bindTouch('btn-up', 'up');
+            bindTouch('btn-down', 'down');
+
+            document.getElementById('btn-switch').addEventListener('click', () => activeIdx = (activeIdx + 1) % sats.length);
+            document.getElementById('btn-reset').addEventListener('click', resetGame);
+
+            // --- ГЛАВНЫЙ ЦИКЛ ---
+            function gameLoop() {
+                ctx.fillStyle = COLOR_BG;
+                ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+                ctx.fillStyle = '#648cc8';
+                stars.forEach(s => {
+                    ctx.beginPath();
+                    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+
+                ctx.strokeStyle = COLOR_GRID;
+                ctx.lineWidth = 1;
+                [180, 300, 450, 600].forEach(r => {
+                    ctx.beginPath();
+                    ctx.arc(CENTER.x, CENTER.y, r, 0, Math.PI * 2);
+                    ctx.stroke();
+                });
+
+                ctx.beginPath();
+                ctx.arc(CENTER.x, CENTER.y, EARTH_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = COLOR_EARTH;
+                ctx.fill();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = COLOR_GLOW;
+                ctx.stroke();
+
+                const activeSat = sats[activeIdx];
+                if (activeSat && activeSat.alive && activeSat.fuel > 0) {
+                    if (keys.left) activeSat.rotate(-1);
+                    if (keys.right) activeSat.rotate(1);
+                    if (keys.up) { activeSat.thrust(THRUST_POWER); activeSat.thrusting = true; }
+                    if (keys.down) { activeSat.thrust(-THRUST_POWER); activeSat.thrusting = true; }
+                }
+
+                sats.forEach(s => {
+                    s.thrusting = false;
+                    s.update();
+                });
+
+                sats.forEach((s, i) => {
+                    s.draw(ctx);
+                    if (i === activeIdx && s.alive) {
+                        ctx.beginPath();
+                        ctx.arc(s.x, s.y, 25, 0, Math.PI * 2);
+                        ctx.strokeStyle = COLOR_HIGHLIGHT;
+                        ctx.stroke();
+                    }
+                });
+
+                // Интерфейс
+                ctx.fillStyle = 'rgba(10, 20, 30, 0.8)';
+                ctx.fillRect(20, 20, 280, 110);
+                ctx.strokeStyle = COLOR_HIGHLIGHT;
+                ctx.strokeRect(20, 20, 280, 110);
+
+                ctx.fillStyle = COLOR_HIGHLIGHT;
+                ctx.font = 'bold 16px Segoe UI';
+                ctx.fillText(`ACTIVE UNIT: ${activeSat.name}`, 30, 45);
+                
+                if (activeSat.alive) {
+                    const dist = Math.hypot(activeSat.x - CENTER.x, activeSat.y - CENTER.y);
+                    ctx.fillStyle = COLOR_TEXT;
+                    ctx.font = '14px Segoe UI';
+                    ctx.fillText(`ALTITUDE : ${(dist - EARTH_RADIUS).toFixed(1)} KM`, 30, 70);
+                    ctx.fillText(`VELOCITY : ${Math.hypot(activeSat.vx, activeSat.vy).toFixed(2)} M/S`, 30, 90);
+                    ctx.fillText(`FUEL     : ${activeSat.fuel.toFixed(1)} %`, 30, 110);
+                } else {
+                    ctx.fillStyle = COLOR_WARNING;
+                    ctx.font = 'bold 16px Segoe UI';
+                    ctx.fillText('STATUS: LOST CONNECTION', 30, 75);
+                }
+
+                requestAnimationFrame(gameLoop);
+            }
+
+            gameLoop();
+        };
+    </script>
+</body>
+</html>
